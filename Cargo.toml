@@ -1,0 +1,15 @@
+[package]
+name = "burritun"
+version = "0.1.0"
+authors = ["user"]
+
+[dependencies]
+tun-tap = "0.1.1"
+log = "0.4"
+env_logger = "0.5"
+pktparse = "0.2.2"
+nom = "3"
+pnet = "0.21"
+error-chain = "0.11"
+clap = "2"
+structopt = "0.2"
