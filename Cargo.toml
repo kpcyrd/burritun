@@ -1,7 +1,12 @@
 [package]
 name = "burritun"
 version = "0.1.0"
-authors = ["user"]
+description = "Wrap a tun device in a tap device"
+authors = ["kpcyrd <git@rxv.cc>"]
+license = "GPL-3.0"
+repository = "https://github.com/kpcyrd/burritun"
+categories = ["command-line-utilities"]
+readme = "README.md"
 
 [dependencies]
 tun-tap = "0.1.1"
