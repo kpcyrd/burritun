@@ -8,7 +8,18 @@ interface correctly.
 
 ![burrito logo](logo.png)
 
-TODO: arp
+## Usage
+
+```
+# wrap tun0 into burritun0
+burritun tun0 burritun0 &
+# remove ip from tun device
+ip a del  192.0.2.4/24 dev tun0
+# add ip to tap device
+ip a add 192.0.2.4/24 dev burritun0
+# resume burritun
+fg
+```
 
 ## License
 

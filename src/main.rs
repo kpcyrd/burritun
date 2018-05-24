@@ -22,16 +22,15 @@ use tun_tap::Iface;
 use tun_tap::Mode::Tap;
 
 use nom::IResult::Done;
-use pktparse::ethernet;
+use pktparse::arp;
 use pktparse::ipv4;
+use pktparse::ethernet::{self, EtherType};
 use structopt::StructOpt;
 
 use std::thread;
-use std::process::Command;
-// use std::sync::mpsc;
 use std::sync::Arc;
-// use pnet::transport::TransportChannelType::Layer3;
-use pnet::datalink::{self, NetworkInterface, DataLinkSender, DataLinkReceiver};
+use std::process::Command;
+use pnet::datalink::{self, NetworkInterface, MacAddr, DataLinkSender, DataLinkReceiver};
 use pnet::datalink::Channel::Ethernet;
 
 #[derive(StructOpt, Debug)]
@@ -82,17 +81,26 @@ fn open_tap(tap: &str) -> Result<(Arc<Iface>, Arc<Iface>)> {
     Ok((tap_writer, tap_reader))
 }
 
-fn tun2tap(mut tun_rx: Box<DataLinkReceiver>, tap_tx: Arc<Iface>) -> Result<()> {
+fn iface_mac(name: &str) -> Result<MacAddr> {
+    let interfaces = datalink::interfaces();
+    let interface = interfaces.into_iter()
+        .filter(|iface: &NetworkInterface| iface.name == name)
+        .next()
+        .chain_err(|| "Interface not found")?;
+    Ok(interface.mac.unwrap())
+}
+
+fn tun2tap(mac: MacAddr, mut tun_rx: Box<DataLinkReceiver>, tap_tx: Arc<Iface>) -> Result<()> {
     while let Ok(packet) = tun_rx.next() {
         debug!("recv(tun): {:?}", packet);
         if let Done(_remaining, ipv4_hdr) = ipv4::parse_ipv4_header(&packet) {
             debug!("recv(tun, ipv4): {:?}", ipv4_hdr);
 
             let mut out = vec![
-                0, 0, 0, 0,                     // ????
-                255, 255, 255, 255, 255, 255,   // dest mac
-                255, 255, 255, 255, 255, 255,   // src mac
-                8, 0,                           // ipv4
+                0, 0, 0, 0,                                 // ????
+                mac.0, mac.1, mac.2, mac.3, mac.4, mac.5,   // dest mac
+                0x11, 0x22, 0x33, 0x44, 0x55, 0x66,         // src mac
+                8, 0,                                       // ipv4
             ];
             out.extend(packet);
 
@@ -104,17 +112,56 @@ fn tun2tap(mut tun_rx: Box<DataLinkReceiver>, tap_tx: Arc<Iface>) -> Result<()> 
     Ok(())
 }
 
-fn tap2tun(tap_rx: Arc<Iface>, _tun_tx: Box<DataLinkSender>) -> Result<()> {
+fn tap2tun(tap: Arc<Iface>, mut tun_tx: Box<DataLinkSender>) -> Result<()> {
     let mut buffer = vec![0; 1504]; // MTU + 4 for the header
     loop {
-        let n = tap_rx.recv(&mut buffer)?;
+        let n = tap.recv(&mut buffer)?;
         debug!("recv(tap): {:?}", &buffer[4..n]);
 
         if let Done(remaining, eth_frame) = ethernet::parse_ethernet_frame(&buffer[4..n]) {
             debug!("recv(tap, eth): {:?}, {:?}", eth_frame, remaining);
+
+            match eth_frame.ethertype {
+                EtherType::ARP => {
+                    if let Done(_, arp_pkt) = arp::parse_arp_pkt(remaining) {
+                        info!("recv(tap, arp): {:?}", arp_pkt);
+
+                        let mut out = vec![
+                            0, 0, 0, 0,                     // ????
+                            255, 255, 255, 255, 255, 255,   // dest mac
+                            255, 255, 255, 255, 255, 255,   // src mac
+                            8, 6,                           // arp
+
+                            0, 1,                           // hw addr: eth
+                            8, 0,                           // proto addr: ipv4
+                            6, 4,                           // sizes
+                            0, 2,                           // operation: reply
+                        ];
+
+                        out.extend(&[0x11, 0x22, 0x33, 0x44, 0x55, 0x66]); // src mac
+                        out.extend(&arp_pkt.dest_addr.octets()); // src ip
+
+                        out.extend(&arp_pkt.src_mac.0); // dest mac
+                        out.extend(&arp_pkt.src_addr.octets()); // dest ip
+
+                        info!("send(tap, arp): {:?}", &out);
+                        tap.send(&out)?;
+                    }
+                },
+
+                EtherType::IPv4 => {
+                    if let Done(payload, ip_hdr) = ipv4::parse_ipv4_header(remaining) {
+                        debug!("send(tun, ipv4): {:?}, {:?}", ip_hdr, payload);
+                    }
+
+                    debug!("send(tun): {:?}", remaining);
+                    tun_tx.send_to(&remaining, None).unwrap()?;
+                },
+
+                _ => (),
+            }
         }
     }
-
 }
 
 fn run() -> Result<()> {
@@ -129,8 +176,11 @@ fn run() -> Result<()> {
     let (tap_tx, tap_rx) = open_tap(&opt.tap)?;
     let (tun_tx, tun_rx) = open_tun(&opt.tun)?;
 
+    let mac = iface_mac(&opt.tap)?;
+    info!("using {:?} as local mac address", mac);
+
     let t1 = thread::spawn(move || {
-        tun2tap(tun_rx, tap_tx)
+        tun2tap(mac, tun_rx, tap_tx)
     });
 
     let t2 = thread::spawn(move || {
