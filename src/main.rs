@@ -3,7 +3,6 @@ extern crate tun_tap;
 #[macro_use] extern crate log;
 extern crate env_logger;
 extern crate pktparse;
-extern crate nom;
 extern crate pnet;
 #[macro_use] extern crate structopt;
 #[macro_use] extern crate error_chain;
@@ -15,13 +14,11 @@ mod errors {
         }
     }
 }
-// use errors::{Result, Error, ErrorKind};
 use errors::{Result, ResultExt};
 
 use tun_tap::Iface;
 use tun_tap::Mode::Tap;
 
-use nom::IResult::Done;
 use pktparse::arp;
 use pktparse::ipv4;
 use pktparse::ethernet::{self, EtherType};
@@ -93,7 +90,7 @@ fn iface_mac(name: &str) -> Result<MacAddr> {
 fn tun2tap(mac: MacAddr, mut tun_rx: Box<DataLinkReceiver>, tap_tx: Arc<Iface>) -> Result<()> {
     while let Ok(packet) = tun_rx.next() {
         debug!("recv(tun): {:?}", packet);
-        if let Done(_remaining, ipv4_hdr) = ipv4::parse_ipv4_header(&packet) {
+        if let Ok((_remaining, ipv4_hdr)) = ipv4::parse_ipv4_header(&packet) {
             debug!("recv(tun, ipv4): {:?}", ipv4_hdr);
 
             let mut out = vec![
@@ -118,12 +115,12 @@ fn tap2tun(tap: Arc<Iface>, mut tun_tx: Box<DataLinkSender>) -> Result<()> {
         let n = tap.recv(&mut buffer)?;
         debug!("recv(tap): {:?}", &buffer[4..n]);
 
-        if let Done(remaining, eth_frame) = ethernet::parse_ethernet_frame(&buffer[4..n]) {
+        if let Ok((remaining, eth_frame)) = ethernet::parse_ethernet_frame(&buffer[4..n]) {
             debug!("recv(tap, eth): {:?}, {:?}", eth_frame, remaining);
 
             match eth_frame.ethertype {
                 EtherType::ARP => {
-                    if let Done(_, arp_pkt) = arp::parse_arp_pkt(remaining) {
+                    if let Ok((_, arp_pkt)) = arp::parse_arp_pkt(remaining) {
                         info!("recv(tap, arp): {:?}", arp_pkt);
 
                         let mut out = vec![
@@ -150,7 +147,7 @@ fn tap2tun(tap: Arc<Iface>, mut tun_tx: Box<DataLinkSender>) -> Result<()> {
                 },
 
                 EtherType::IPv4 => {
-                    if let Done(payload, ip_hdr) = ipv4::parse_ipv4_header(remaining) {
+                    if let Ok((payload, ip_hdr)) = ipv4::parse_ipv4_header(remaining) {
                         debug!("send(tun, ipv4): {:?}, {:?}", ip_hdr, payload);
                     }
 
